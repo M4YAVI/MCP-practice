@@ -1,0 +1,966 @@
+Table of Contents
+Introduction & Core Concepts
+Architecture Deep Dive
+Setting Up Your Environment
+Building MCP Servers
+Building MCP Clients
+Resources & Tools
+Prompts & Sampling
+Advanced Patterns
+Pro Tips & Tricks
+Real-World Examples
+1. Introduction & Core Concepts {#introduction}
+The Model Context Protocol (MCP) is an open protocol that standardizes how AI applications share context and interact with external systems. Think of it as a universal adapter between AI models and the world.
+
+Core Concepts:
+python
+
+                        Copy
+                    
+# MCP operates on these fundamental principles:
+"""
+1. SERVERS: Expose resources, tools, and prompts
+2. CLIENTS: Connect to servers (like Claude Desktop)
+3. RESOURCES: Data/content that servers provide
+4. TOOLS: Functions that servers expose for execution
+5. PROMPTS: Reusable prompt templates
+6. TRANSPORT: How clients and servers communicate
+"""
+2. Architecture Deep Dive {#architecture}
+python
+
+                        Copy
+                    
+# MCP uses JSON-RPC 2.0 over stdio/SSE for communication
+# Here's the flow:
+
+"""
+┌─────────────┐         ┌─────────────┐         ┌──────────────┐
+│   Client    │ <-----> │  Transport  │ <-----> │    Server    │
+│  (Claude)   │  JSON   │   (stdio)   │  JSON   │ (Your Code)  │
+└─────────────┘  RPC    └─────────────┘  RPC    └──────────────┘
+"""
+3. Setting Up Your Environment {#setup}
+bash
+
+                        Copy
+                    
+# Install MCP SDK
+pip install mcp
+
+# For development
+pip install mcp[dev]
+
+# Create project structure
+mkdir my-mcp-server
+cd my-mcp-server
+touch server.py
+4. Building MCP Servers {#servers}
+Basic Server Structure
+python
+
+                        Copy
+                    
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
+from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
+import mcp.server.stdio
+import mcp.types as types
+
+# Initialize server
+server = Server("my-awesome-server")
+
+# Pro tip: Always use descriptive names
+@server.list_resources()
+async def handle_list_resources() -> List[types.Resource]:
+    """List all available resources"""
+    return [
+        types.Resource(
+            uri="file:///data/important.txt",
+            name="Important Data",
+            description="Critical information for the AI",
+            mimeType="text/plain"
+        )
+    ]
+
+@server.read_resource()
+async def handle_read_resource(uri: str) -> str:
+    """Read a specific resource"""
+    if uri == "file:///data/important.txt":
+        return "This is important data that provides context"
+    raise ValueError(f"Unknown resource: {uri}")
+Advanced Server with Tools
+python
+
+                        Copy
+                    
+@server.list_tools()
+async def handle_list_tools() -> List[types.Tool]:
+    """Expose callable tools"""
+    return [
+        types.Tool(
+            name="calculate_compound_interest",
+            description="Calculate compound interest with advanced options",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "principal": {"type": "number", "description": "Initial amount"},
+                    "rate": {"type": "number", "description": "Annual interest rate (as decimal)"},
+                    "time": {"type": "number", "description": "Time period in years"},
+                    "compound_frequency": {
+                        "type": "string",
+                        "enum": ["annually", "semi-annually", "quarterly", "monthly", "daily"],
+                        "default": "annually"
+                    }
+                },
+                "required": ["principal", "rate", "time"]
+            }
+        ),
+        types.Tool(
+            name="web_search",
+            description="Search the web with advanced filtering",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "num_results": {"type": "integer", "default": 10},
+                    "time_range": {
+                        "type": "string",
+                        "enum": ["day", "week", "month", "year", "all"],
+                        "default": "all"
+                    }
+                },
+                "required": ["query"]
+            }
+        )
+    ]
+
+@server.call_tool()
+async def handle_call_tool(
+    name: str, 
+    arguments: Optional[Dict[str, Any]] = None
+) -> List[types.TextContent]:
+    """Execute tools with proper error handling"""
+    
+    if name == "calculate_compound_interest":
+        # Pro tip: Always validate inputs
+        principal = arguments.get("principal", 0)
+        rate = arguments.get("rate", 0)
+        time = arguments.get("time", 0)
+        freq = arguments.get("compound_frequency", "annually")
+        
+        # Frequency mapping
+        freq_map = {
+            "annually": 1,
+            "semi-annually": 2,
+            "quarterly": 4,
+            "monthly": 12,
+            "daily": 365
+        }
+        
+        n = freq_map[freq]
+        amount = principal * (1 + rate/n) ** (n * time)
+        interest = amount - principal
+        
+        return [
+            types.TextContent(
+                type="text",
+                text=f"💰 Compound Interest Calculation:\n"
+                     f"Principal: ${principal:,.2f}\n"
+                     f"Rate: {rate*100:.2f}%\n"
+                     f"Time: {time} years\n"
+                     f"Frequency: {freq}\n"
+                     f"Final Amount: ${amount:,.2f}\n"
+                     f"Interest Earned: ${interest:,.2f}"
+            )
+        ]
+    
+    elif name == "web_search":
+        # Simulate web search
+        query = arguments.get("query", "")
+        num_results = arguments.get("num_results", 10)
+        
+        # Pro tip: Add metadata for better context
+        results = [
+            {
+                "title": f"Result {i+1} for '{query}'",
+                "snippet": f"This is a simulated result for your search...",
+                "url": f"https://example.com/result{i+1}",
+                "relevance_score": 0.95 - (i * 0.1)
+            }
+            for i in range(min(num_results, 5))
+        ]
+        
+        return [
+            types.TextContent(
+                type="text",
+                text=json.dumps(results, indent=2)
+            )
+        ]
+    
+    raise ValueError(f"Unknown tool: {name}")
+Server with Dynamic Resources
+python
+
+                        Copy
+                    
+class DynamicResourceServer:
+    def __init__(self):
+        self.server = Server("dynamic-server")
+        self.resources_cache = {}
+        self.setup_handlers()
+    
+    def setup_handlers(self):
+        @self.server.list_resources()
+        async def list_resources() -> List[types.Resource]:
+            # Pro tip: Generate resources based on current state
+            resources = []
+            
+            # Add system resources
+            resources.append(
+                types.Resource(
+                    uri="system://memory",
+                    name="System Memory Status",
+                    description="Current memory usage and statistics",
+                    mimeType="application/json"
+                )
+            )
+            
+            # Add cached dynamic resources
+            for uri, data in self.resources_cache.items():
+                resources.append(
+                    types.Resource(
+                        uri=uri,
+                        name=data.get("name", "Dynamic Resource"),
+                        description=data.get("description", ""),
+                        mimeType="application/json"
+                    )
+                )
+            
+            return resources
+        
+        @self.server.read_resource()
+        async def read_resource(uri: str) -> str:
+            if uri == "system://memory":
+                import psutil
+                memory = psutil.virtual_memory()
+                return json.dumps({
+                    "total": memory.total,
+                    "available": memory.available,
+                    "percent": memory.percent,
+                    "used": memory.used,
+                    "free": memory.free
+                }, indent=2)
+            
+            if uri in self.resources_cache:
+                return json.dumps(self.resources_cache[uri], indent=2)
+            
+            raise ValueError(f"Resource not found: {uri}")
+    
+    def add_dynamic_resource(self, uri: str, data: Dict[str, Any]):
+        """Dynamically add resources at runtime"""
+        self.resources_cache[uri] = data
+Server with Prompts
+python
+
+                        Copy
+                    
+@server.list_prompts()
+async def handle_list_prompts() -> List[types.Prompt]:
+    """Provide reusable prompt templates"""
+    return [
+        types.Prompt(
+            name="code_reviewer",
+            description="Comprehensive code review assistant",
+            arguments=[
+                types.PromptArgument(
+                    name="language",
+                    description="Programming language",
+                    required=True
+                ),
+                types.PromptArgument(
+                    name="code",
+                    description="Code to review",
+                    required=True
+                ),
+                types.PromptArgument(
+                    name="focus_areas",
+                    description="Specific areas to focus on",
+                    required=False
+                )
+            ]
+        ),
+        types.Prompt(
+            name="data_analyst",
+            description="Advanced data analysis prompt",
+            arguments=[
+                types.PromptArgument(
+                    name="dataset",
+                    description="Dataset description or sample",
+                    required=True
+                ),
+                types.PromptArgument(
+                    name="analysis_type",
+                    description="Type of analysis needed",
+                    required=True
+                )
+            ]
+        )
+    ]
+
+@server.get_prompt()
+async def handle_get_prompt(
+    name: str, 
+    arguments: Optional[Dict[str, str]] = None
+) -> types.GetPromptResult:
+    """Generate prompt based on template"""
+    
+    if name == "code_reviewer":
+        language = arguments.get("language", "Python")
+        code = arguments.get("code", "")
+        focus_areas = arguments.get("focus_areas", "all aspects")
+        
+        return types.GetPromptResult(
+            description=f"Code review for {language}",
+            messages=[
+                types.PromptMessage(
+                    role="user",
+                    content=types.TextContent(
+                        type="text",
+                        text=f"""Please review the following {language} code:
+
+```{language.lower()}
+{code}
+Focus on: {focus_areas}
+
+Provide:
+
+Security vulnerabilities
+Performance optimizations
+Code style improvements
+Best practices violations
+Potential bugs
+Suggestions for refactoring
+"""
+)
+)
+]
+)
+raise ValueError(f"Unknown prompt: {name}")
+plaintext
+
+                        Copy
+                    
+
+## 5. Building MCP Clients {#clients}
+
+```python
+import asyncio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+class MCPClient:
+    def __init__(self, server_script_path: str):
+        self.server_script_path = server_script_path
+        self.session = None
+    
+    async def connect(self):
+        """Establish connection to MCP server"""
+        server_params = StdioServerParameters(
+            command="python",
+            args=[self.server_script_path],
+            env=None
+        )
+        
+        transport = await stdio_client(server_params)
+        self.session = ClientSession(transport[0], transport[1])
+        await self.session.initialize()
+        
+        # Pro tip: Always check capabilities
+        if self.session.server_info:
+            print(f"Connected to: {self.session.server_info.name}")
+            print(f"Version: {self.session.server_info.version}")
+    
+    async def list_all_capabilities(self):
+        """Discover what the server can do"""
+        # List resources
+        resources = await self.session.list_resources()
+        print(f"\n📁 Resources: {len(resources.resources)}")
+        for resource in resources.resources:
+            print(f"  - {resource.name}: {resource.uri}")
+        
+        # List tools
+        tools = await self.session.list_tools()
+        print(f"\n🔧 Tools: {len(tools.tools)}")
+        for tool in tools.tools:
+            print(f"  - {tool.name}: {tool.description}")
+        
+        # List prompts
+        prompts = await self.session.list_prompts()
+        print(f"\n💬 Prompts: {len(prompts.prompts)}")
+        for prompt in prompts.prompts:
+            print(f"  - {prompt.name}: {prompt.description}")
+    
+    async def call_tool_with_retry(self, tool_name: str, arguments: Dict[str, Any], max_retries: int = 3):
+        """Call tool with automatic retry logic"""
+        for attempt in range(max_retries):
+            try:
+                result = await self.session.call_tool(tool_name, arguments)
+                return result
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                print(f"Attempt {attempt + 1} failed: {e}")
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+    
+    async def close(self):
+        """Clean up connection"""
+        if self.session:
+            await self.session.close()
+
+# Usage example
+async def main():
+    client = MCPClient("./server.py")
+    await client.connect()
+    await client.list_all_capabilities()
+    
+    # Call a tool
+    result = await client.call_tool_with_retry(
+        "calculate_compound_interest",
+        {
+            "principal": 10000,
+            "rate": 0.05,
+            "time": 10,
+            "compound_frequency": "monthly"
+        }
+    )
+    print(f"\nTool Result: {result}")
+    
+    await client.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+6. Advanced Patterns {#advanced}
+Pattern 1: Middleware and Interceptors
+python
+
+                        Copy
+                    
+from functools import wraps
+import time
+import logging
+
+class MCPMiddleware:
+    """Add middleware capabilities to MCP servers"""
+    
+    def __init__(self, server: Server):
+        self.server = server
+        self.middleware_stack = []
+    
+    def use(self, middleware_func):
+        """Add middleware to the stack"""
+        self.middleware_stack.append(middleware_func)
+    
+    def timing_middleware(self, handler_name: str):
+        """Log execution time of handlers"""
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                start = time.time()
+                try:
+                    result = await func(*args, **kwargs)
+                    elapsed = time.time() - start
+                    logging.info(f"{handler_name} completed in {elapsed:.3f}s")
+                    return result
+                except Exception as e:
+                    elapsed = time.time() - start
+                    logging.error(f"{handler_name} failed after {elapsed:.3f}s: {e}")
+                    raise
+            return wrapper
+        return decorator
+    
+    def rate_limit_middleware(self, max_calls: int = 100, window: int = 60):
+        """Rate limit handler calls"""
+        calls = []
+        
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                now = time.time()
+                # Clean old calls
+                calls[:] = [t for t in calls if now - t < window]
+                
+                if len(calls) >= max_calls:
+                    raise Exception(f"Rate limit exceeded: {max_calls} calls per {window}s")
+                
+                calls.append(now)
+                return await func(*args, **kwargs)
+            return wrapper
+        return decorator
+    
+    def cache_middleware(self, ttl: int = 300):
+        """Cache handler results"""
+        cache = {}
+        
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                # Create cache key
+                key = f"{args}:{kwargs}"
+                
+                # Check cache
+                if key in cache:
+                    result, timestamp = cache[key]
+                    if time.time() - timestamp < ttl:
+                        logging.info(f"Cache hit for {func.__name__}")
+                        return result
+                
+                # Call function and cache result
+                result = await func(*args, **kwargs)
+                cache[key] = (result, time.time())
+                return result
+            return wrapper
+        return decorator
+Pattern 2: Resource Aggregation
+python
+
+                        Copy
+                    
+class ResourceAggregator:
+    """Aggregate resources from multiple sources"""
+    
+    def __init__(self):
+        self.providers = []
+    
+    def register_provider(self, provider):
+        """Register a resource provider"""
+        self.providers.append(provider)
+    
+    async def aggregate_resources(self) -> List[types.Resource]:
+        """Collect resources from all providers"""
+        all_resources = []
+        
+        # Pro tip: Use asyncio.gather for parallel fetching
+        tasks = [provider.get_resources() for provider in self.providers]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results:
+            if isinstance(result, Exception):
+                logging.error(f"Provider failed: {result}")
+                continue
+            all_resources.extend(result)
+        
+        # Remove duplicates based on URI
+        seen_uris = set()
+        unique_resources = []
+        for resource in all_resources:
+            if resource.uri not in seen_uris:
+                seen_uris.add(resource.uri)
+                unique_resources.append(resource)
+        
+        return unique_resources
+
+class FileSystemProvider:
+    """Provide file system resources"""
+    
+    def __init__(self, root_path: str):
+        self.root_path = root_path
+    
+    async def get_resources(self) -> List[types.Resource]:
+        import os
+        resources = []
+        
+        for root, dirs, files in os.walk(self.root_path):
+            for file in files:
+                if file.endswith(('.txt', '.md', '.json')):
+                    path = os.path.join(root, file)
+                    resources.append(
+                        types.Resource(
+                            uri=f"file://{path}",
+                            name=file,
+                            description=f"File from {root}",
+                            mimeType=self._get_mime_type(file)
+                        )
+                    )
+        
+        return resources
+    
+    def _get_mime_type(self, filename: str) -> str:
+        ext = filename.split('.')[-1].lower()
+        mime_map = {
+            'txt': 'text/plain',
+            'md': 'text/markdown',
+            'json': 'application/json',
+            'py': 'text/x-python',
+            'js': 'text/javascript'
+        }
+        return mime_map.get(ext, 'application/octet-stream')
+Pattern 3: Event-Driven Architecture
+python
+
+                        Copy
+                    
+from typing import Callable, Dict, List
+import asyncio
+
+class EventEmitter:
+    """Event system for MCP servers"""
+    
+    def __init__(self):
+        self._handlers: Dict[str, List[Callable]] = {}
+    
+    def on(self, event: str, handler: Callable):
+        """Register event handler"""
+        if event not in self._handlers:
+            self._handlers[event] = []
+        self._handlers[event].append(handler)
+    
+    async def emit(self, event: str, *args, **kwargs):
+        """Emit event to all handlers"""
+        if event in self._handlers:
+            tasks = [
+                handler(*args, **kwargs) if asyncio.iscoroutinefunction(handler)
+                else asyncio.create_task(asyncio.to_thread(handler, *args, **kwargs))
+                for handler in self._handlers[event]
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+class EventDrivenMCPServer:
+    """MCP Server with event system"""
+    
+    def __init__(self, name: str):
+        self.server = Server(name)
+        self.events = EventEmitter()
+        self.setup_handlers()
+    
+    def setup_handlers(self):
+        @self.server.call_tool()
+        async def handle_call_tool(name: str, arguments: Optional[Dict[str, Any]] = None):
+            # Emit before event
+            await self.events.emit('tool:before', name, arguments)
+            
+            try:
+                # Tool execution logic here
+                result = await self._execute_tool(name, arguments)
+                
+                # Emit success event
+                await self.events.emit('tool:success', name, arguments, result)
+                
+                return result
+            except Exception as e:
+                # Emit error event
+                await self.events.emit('tool:error', name, arguments, e)
+                raise
+    
+    async def _execute_tool(self, name: str, arguments: Dict[str, Any]):
+        # Tool implementation
+        pass
+
+# Usage
+server = EventDrivenMCPServer("event-server")
+
+# Register event handlers
+@server.events.on('tool:before')
+async def log_tool_call(name: str, arguments: Dict[str, Any]):
+    print(f"Tool '{name}' called with {arguments}")
+
+@server.events.on('tool:error')
+async def handle_tool_error(name: str, arguments: Dict[str, Any], error: Exception):
+    # Send to error tracking service
+    print(f"Tool '{name}' failed: {error}")
+7. Pro Tips & Tricks {#pro-tips}
+Tip 1: Streaming Responses
+python
+
+                        Copy
+                    
+@server.call_tool()
+async def handle_streaming_tool(name: str, arguments: Dict[str, Any]):
+    """Stream large responses efficiently"""
+    
+    if name == "large_data_processor":
+        # Pro tip: Use async generators for memory efficiency
+        async def stream_data():
+            for i in range(1000000):
+                if i % 100000 == 0:
+                    yield f"Processed {i} items...\n"
+                # Simulate processing
+                await asyncio.sleep(0.001)
+        
+        # Collect streamed data
+        chunks = []
+        async for chunk in stream_data():
+            chunks.append(chunk)
+        
+        return [types.TextContent(type="text", text="".join(chunks))]
+Tip 2: Context Management
+python
+
+                        Copy
+                    
+class ContextManager:
+    """Manage conversation context efficiently"""
+    
+    def __init__(self, max_context_size: int = 10000):
+        self.max_context_size = max_context_size
+        self.context = []
+    
+    def add_to_context(self, item: Dict[str, Any]):
+        """Add item to context with size management"""
+        self.context.append({
+            **item,
+            'timestamp': time.time()
+        })
+        
+        # Trim context if too large
+        while self._calculate_size() > self.max_context_size:
+            self.context.pop(0)
+    
+    def get_relevant_context(self, query: str, max_items: int = 5):
+        """Get most relevant context items"""
+        # Simple relevance scoring (in production, use embeddings)
+        scored_items = []
+        query_words = set(query.lower().split())
+        
+        for item in self.context:
+            content = str(item.get('content', '')).lower()
+            score = len(query_words.intersection(content.split()))
+            scored_items.append((score, item))
+        
+        # Sort by relevance and recency
+        scored_items.sort(key=lambda x: (x[0], x[1]['timestamp']), reverse=True)
+        
+        return [item for score, item in scored_items[:max_items]]
+    
+    def _calculate_size(self) -> int:
+        """Calculate context size in characters"""
+        return sum(len(str(item)) for item in self.context)
+Tip 3: Security Best Practices
+python
+
+                        Copy
+                    
+import hmac
+import hashlib
+from typing import Optional
+
+class SecureMCPServer:
+    """MCP Server with security features"""
+    
+    def __init__(self, name: str, secret_key: str):
+        self.server = Server(name)
+        self.secret_key = secret_key.encode()
+        self.rate_limiter = {}
+        self.setup_secure_handlers()
+    
+    def verify_request_signature(self, data: str, signature: str) -> bool:
+        """Verify request authenticity"""
+        expected = hmac.new(self.secret_key, data.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+    
+    def sanitize_input(self, input_data: Any) -> Any:
+        """Sanitize user input"""
+        if isinstance(input_data, str):
+            # Remove potential injection attempts
+            dangerous_patterns = ['<script', 'javascript:', 'file://', '../']
+            for pattern in dangerous_patterns:
+                input_data = input_data.replace(pattern, '')
+        elif isinstance(input_data, dict):
+            return {k: self.sanitize_input(v) for k, v in input_data.items()}
+        elif isinstance(input_data, list):
+            return [self.sanitize_input(item) for item in input_data]
+        
+        return input_data
+    
+    def check_rate_limit(self, client_id: str, limit: int = 100, window: int = 60) -> bool:
+        """Check if client exceeded rate limit"""
+        now = time.time()
+        
+        if client_id not in self.rate_limiter:
+            self.rate_limiter[client_id] = []
+        
+        # Clean old entries
+        self.rate_limiter[client_id] = [
+            t for t in self.rate_limiter[client_id] 
+            if now - t < window
+        ]
+        
+        if len(self.rate_limiter[client_id]) >= limit:
+            return False
+        
+        self.rate_limiter[client_id].append(now)
+        return True
+Tip 4: Performance Optimization
+python
+
+                        Copy
+                    
+import aiofiles
+import aiocache
+from concurrent.futures import ThreadPoolExecutor
+
+class OptimizedMCPServer:
+    """High-performance MCP server"""
+    
+    def __init__(self, name: str):
+        self.server = Server(name)
+        self.cache = aiocache.Cache()
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.setup_optimized_handlers()
+    
+    async def read_file_async(self, filepath: str) -> str:
+        """Read files asynchronously"""
+        async with aiofiles.open(filepath, 'r') as f:
+            return await f.read()
+    
+    async def cpu_bound_task(self, data: Any) -> Any:
+        """Run CPU-intensive tasks in thread pool"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self.executor,
+            self._process_data_sync,
+            data
+        )
+    
+    def _process_data_sync(self, data: Any) -> Any:
+        """CPU-intensive processing"""
+        # Example: Complex computation
+        import numpy as np
+        if isinstance(data, list):
+            array = np.array(data)
+            return {
+                'mean': float(np.mean(array)),
+                'std': float(np.std(array)),
+                'median': float(np.median(array))
+            }
+        return data
+    
+    @aiocache.cached(ttl=300)
+    async def cached_operation(self, key: str) -> Any:
+        """Automatically cached operation"""
+        # Expensive operation here
+        await asyncio.sleep(2)  # Simulate slow operation
+        return f"Result for {key}"
+Tip 5: Testing MCP Servers
+python
+
+                        Copy
+                    
+import pytest
+import asyncio
+from unittest.mock import Mock, patch
+
+class TestMCPServer:
+    """Test suite for MCP servers"""
+    
+    @pytest.fixture
+    async def server(self):
+        """Create test server instance"""
+        server = Server("test-server")
+        
+        @server.list_tools()
+        async def list_tools():
+            return [
+                types.Tool(
+                    name="test_tool",
+                    description="Test tool",
+                    inputSchema={"type": "object", "properties": {}}
+                )
+            ]
+        
+        @server.call_tool()
+        async def call_tool(name: str, arguments: Dict[str, Any]):
+            if name == "test_tool":
+                return [types.TextContent(type="text", text="Test result")]
+            raise ValueError(f"Unknown tool: {name}")
+        
+        return server
+    
+    @pytest.mark.asyncio
+    async def test_list_tools(self, server):
+        """Test tool listing"""
+        tools = await server.list_tools()
+        assert len(tools) == 1
+        assert tools[0].name == "test_tool"
+    
+    @pytest.mark.asyncio
+    async def test_call_tool_success(self, server):
+        """Test successful tool call"""
+        result = await server.call_tool("test_tool", {})
+        assert len(result) == 1
+        assert result[0].text == "Test result"
+    
+    @pytest.mark.asyncio
+    async def test_call_tool_error(self, server):
+        """Test tool call error handling"""
+        with pytest.raises(ValueError):
+            await server.call_tool("nonexistent_tool", {})
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_calls(self, server):
+        """Test concurrent tool calls"""
+        tasks = [
+            server.call_tool("test_tool", {})
+            for _ in range(10)
+        ]
+        results = await asyncio.gather(*tasks)
+        assert len(results) == 10
+        assert all(r[0].text == "Test result" for r in results)
+8. Real-World Examples {#examples}
+Example 1: Database Query Server
+python
+
+                        Copy
+                    
+import asyncpg
+import json
+from typing import List, Dict, Any
+
+class DatabaseMCPServer:
+    """MCP server for database operations"""
+    
+    def __init__(self, db_url: str):
+        self.db_url = db_url
+        self.server = Server("database-server")
+        self.pool = None
+        self.setup_handlers()
+    
+    async def initialize(self):
+        """Initialize database connection pool"""
+        self.pool = await asyncpg.create_pool(self.db_url)
+    
+    def setup_handlers(self):
+        @self.server.list_tools()
+        async def list_tools() -> List[types.Tool]:
+            return [
+                types.Tool(
+                    name="query_database",
+                    description="Execute SQL query with parameterization",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "SQL query"},
+                            "params": {"type": "array", "description": "Query parameters"}
+                        },
+                        "required": ["query"]
+                    }
+                ),
+                types.Tool(
+                    name="analyze_table",
+                    description="Get table statistics and schema",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "table_name": {"type": "string"}
+                        },
+                        "required": ["table_name"]
+                    }
+                )
+            ]
+        
+        @self.server.call_tool()
+        async def call_tool(name: str, arguments: Dict[str, Any]):
+            if name == "query_database":
+                query = arguments.get("query
